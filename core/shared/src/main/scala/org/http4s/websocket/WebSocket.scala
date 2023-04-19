@@ -24,12 +24,15 @@ private[http4s] sealed trait WebSocket[F[_]] { outer =>
 
   def imapK[G[_]](fk: F ~> G)(gk: G ~> F): WebSocket[G]
 
+  def supportCompression: Boolean
+
 }
 
 private[http4s] final case class WebSocketSeparatePipe[F[_]](
     send: Stream[F, WebSocketFrame],
     receive: Pipe[F, WebSocketFrame, Unit],
     onClose: F[Unit],
+    supportCompression: Boolean,
 ) extends WebSocket[F] {
 
   def imapK[G[_]](fk: F ~> G)(gk: G ~> F): WebSocket[G] =
@@ -37,6 +40,7 @@ private[http4s] final case class WebSocketSeparatePipe[F[_]](
       send.translate(fk),
       sg => receive(sg.translate(gk)).translate(fk),
       fk(onClose),
+      supportCompression,
     )
 
 }
@@ -44,12 +48,14 @@ private[http4s] final case class WebSocketSeparatePipe[F[_]](
 private[http4s] final case class WebSocketCombinedPipe[F[_]](
     receiveSend: Pipe[F, WebSocketFrame, WebSocketFrame],
     onClose: F[Unit],
+    supportCompression: Boolean,
 ) extends WebSocket[F] {
 
   def imapK[G[_]](fk: F ~> G)(gk: G ~> F): WebSocketCombinedPipe[G] =
     WebSocketCombinedPipe(
       sg => receiveSend(sg.translate(gk)).translate(fk),
       fk(onClose),
+      supportCompression,
     )
 
 }

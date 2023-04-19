@@ -37,6 +37,8 @@ import org.typelevel.vault.Key
   *                              default: NotImplemented
   * @param onHandshakeFailure The status code to return when failing to handle a websocket HTTP request to this route.
   *                           default: BadRequest
+  * @param supportCompression Enable supporting compressing/decompressing frames.
+  *                           If the client sent an offer in handshake with  header Sec-Websocket-Extensions: permessage-deflate
   */
 sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
     headers: Headers,
@@ -44,6 +46,7 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
     onHandshakeFailure: F[Response[F]],
     onClose: F[Unit],
     filterPingPongs: Boolean,
+    supportCompression: Boolean,
     private[http4s] val webSocketKey: Key[WebSocketContext[F]],
 ) {
   import WebSocketBuilder2.impl
@@ -55,6 +58,7 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
       onClose: F[Unit] = this.onClose,
       filterPingPongs: Boolean = this.filterPingPongs,
       webSocketKey: Key[WebSocketContext[F]] = this.webSocketKey,
+      supportCompression: Boolean = this.supportCompression,
   ): WebSocketBuilder2[F] = WebSocketBuilder2.impl[F](
     headers,
     onNonWebSocketRequest,
@@ -62,6 +66,7 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
     onClose,
     filterPingPongs,
     webSocketKey,
+    supportCompression,
   )
 
   def withHeaders(headers: Headers): WebSocketBuilder2[F] =
@@ -79,6 +84,9 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
   def withFilterPingPongs(filterPingPongs: Boolean): WebSocketBuilder2[F] =
     copy(filterPingPongs = filterPingPongs)
 
+  def withSupportCompression(supportCompression: Boolean): WebSocketBuilder2[F] =
+    copy(supportCompression = supportCompression)
+
   /** Transform the parameterized effect from F to G. */
   def imapK[G[_]: Applicative](fk: F ~> G)(gk: G ~> F): WebSocketBuilder2[G] =
     impl[G](
@@ -88,6 +96,7 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
       fk(onClose),
       filterPingPongs,
       webSocketKey.imap(_.imapK(fk)(gk))(_.imapK(gk)(fk)),
+      supportCompression,
     )
 
   private def buildResponse(webSocket: WebSocket[F]): F[Response[F]] =
@@ -131,7 +140,7 @@ sealed abstract class WebSocketBuilder2[F[_]: Applicative] private (
       else
         sendReceive
 
-    buildResponse(WebSocketCombinedPipe(finalSendReceive, onClose))
+    buildResponse(WebSocketCombinedPipe(finalSendReceive, onClose, supportCompression))
   }
 
   /** @param send     The send side of the Exchange represents the outgoing stream of messages that should be sent to the client
@@ -202,6 +211,7 @@ object WebSocketBuilder2 {
       onClose = Applicative[F].unit,
       filterPingPongs = true,
       webSocketKey = webSocketKey,
+      supportCompression = false,
     )
 
   private def impl[F[_]: Applicative](
@@ -211,6 +221,7 @@ object WebSocketBuilder2 {
       onClose: F[Unit],
       filterPingPongs: Boolean,
       webSocketKey: Key[WebSocketContext[F]],
+      supportCompression: Boolean,
   ): WebSocketBuilder2[F] =
     new WebSocketBuilder2[F](
       headers = headers,
@@ -219,5 +230,6 @@ object WebSocketBuilder2 {
       onClose = onClose,
       filterPingPongs = filterPingPongs,
       webSocketKey = webSocketKey,
+      supportCompression = supportCompression,
     ) {}
 }

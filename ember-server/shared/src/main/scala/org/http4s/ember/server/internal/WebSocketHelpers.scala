@@ -60,6 +60,11 @@ private[internal] object WebSocketHelpers {
   private[this] val webSocketProtocol = Protocol(ci"websocket", None)
   private[this] val connectionUpgrade = Connection(NonEmptyList.of(upgradeCi))
   private[this] val upgradeWebSocket = Upgrade(webSocketProtocol)
+  private[this] val webSocketCompression = `Sec-WebSocket-Extensions`(
+    "permessage-deflate",
+    "client_no_context_takeover",
+    "server_no_context_takeover",
+  )
 
   // TODO followup: use websocketcontext responses for error modes
   def upgrade[F[_]](
@@ -74,12 +79,18 @@ private[internal] object WebSocketHelpers {
       logger: Logger[F],
   )(implicit F: Temporal[F]): F[Unit] = {
     val wsResponse = clientHandshake(req) match {
-      case Right(key) =>
+      case Right((key, compsesionOffer)) =>
         serverHandshake(key)
           .map { hashBytes =>
             val secWebSocketAccept = new `Sec-WebSocket-Accept`(hashBytes)
-            val headers =
-              ctx.headers ++ Headers(connectionUpgrade, upgradeWebSocket, secWebSocketAccept)
+            val compressionHeader =
+              if (ctx.webSocket.supportCompression && compsesionOffer)
+                Headers(webSocketCompression)
+              else Headers.empty
+
+            val headers = ctx.headers ++ compressionHeader
+            Headers(connectionUpgrade, upgradeWebSocket, secWebSocketAccept)
+
             Response[F](Status.SwitchingProtocols)
               .withHeaders(headers)
           }
@@ -124,13 +135,13 @@ private[internal] object WebSocketHelpers {
     // TODO followup: handle close frames from the user?
     SignallingRef[F, Close](Open).flatMap { close =>
       val (stream, onClose) = ctx.webSocket match {
-        case WebSocketCombinedPipe(receiveSend, onClose) =>
+        case WebSocketCombinedPipe(receiveSend, onClose, supportCompression) =>
           incoming
             .through(decodeFrames[F])
             .evalMapFilter(handleIncomingFrame[F](writeFrame, close))
             .through(receiveSend)
             .foreach(writeFrame) -> onClose
-        case WebSocketSeparatePipe(send, receive, onClose) =>
+        case WebSocketSeparatePipe(send, receive, onClose, supportCompression) =>
           val sendClosingFrame: F[Unit] = close.get.flatMap {
             case Open =>
               for {
@@ -234,7 +245,9 @@ private[internal] object WebSocketHelpers {
       go(stream, Array.emptyByteArray).void.stream
     }
 
-  private def clientHandshake[F[_]](req: Request[F]): Either[ClientHandshakeError, String] = {
+  private def clientHandshake[F[_]](
+      req: Request[F]
+  ): Either[ClientHandshakeError, (String, Boolean)] = {
     val connection = req.headers.get[Connection] match {
       case Some(header) if header.hasUpgrade => Either.unit
       case _ => Left(UpgradeRequired)
@@ -256,7 +269,14 @@ private[internal] object WebSocketHelpers {
       case None => Left(KeyNotFound)
     }
 
-    (connection, upgrade, version, key).mapN { case (_, _, _, key) => key }
+    val extensions = req.headers.get[`Sec-WebSocket-Extensions`] match {
+      case Some(header) => Right(header.value)
+      case None => Left(KeyNotFound)
+    }
+
+    (connection, upgrade, version, key, extensions).mapN { case (_, _, _, key, extensions) =>
+      key -> extensions.contains("permessage-deflate")
+    }
   }
 
   private[this] val magic = ByteVector.view(Rfc6455.handshakeMagicBytes)
